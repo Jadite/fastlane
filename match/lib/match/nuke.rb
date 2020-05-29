@@ -3,8 +3,11 @@ require 'terminal-table'
 require 'spaceship'
 require 'fastlane_core/provisioning_profile'
 require 'fastlane_core/print_table'
+
 require_relative 'module'
-require_relative 'git_helper'
+
+require_relative 'storage'
+require_relative 'encryption'
 
 module Match
   class Nuke
@@ -15,22 +18,44 @@ module Match
     attr_accessor :profiles
     attr_accessor :files
 
+    attr_accessor :storage
+    attr_accessor :encryption
+
     def run(params, type: nil)
       self.params = params
       self.type = type
 
-      params[:workspace] = GitHelper.clone(params[:git_url],
-                                           params[:shallow_clone],
-                                           skip_docs: params[:skip_docs],
-                                           branch: params[:git_branch],
-                                           git_full_name: params[:git_full_name],
-                                           git_user_email: params[:git_user_email],
-                                           clone_branch_directly: params[:clone_branch_directly])
+      update_optional_values_depending_on_storage_type(params)
+
+      self.storage = Storage.for_mode(params[:storage_mode], {
+        git_url: params[:git_url],
+        shallow_clone: params[:shallow_clone],
+        skip_docs: params[:skip_docs],
+        git_branch: params[:git_branch],
+        git_full_name: params[:git_full_name],
+        git_user_email: params[:git_user_email],
+        clone_branch_directly: params[:clone_branch_directly],
+        google_cloud_bucket_name: params[:google_cloud_bucket_name].to_s,
+        google_cloud_keys_file: params[:google_cloud_keys_file].to_s,
+        google_cloud_project_id: params[:google_cloud_project_id].to_s,
+        s3_region: params[:s3_region].to_s,
+        s3_access_key: params[:s3_access_key].to_s,
+        s3_secret_access_key: params[:s3_secret_access_key].to_s,
+        s3_bucket: params[:s3_bucket].to_s
+      })
+      self.storage.download
+
+      # After the download was complete
+      self.encryption = Encryption.for_storage_mode(params[:storage_mode], {
+        git_url: params[:git_url],
+        working_directory: storage.working_directory
+      })
+      self.encryption.decrypt_files if self.encryption
 
       had_app_identifier = self.params.fetch(:app_identifier, ask: false)
       self.params[:app_identifier] = '' # we don't really need a value here
       FastlaneCore::PrintTable.print_values(config: params,
-                                         hide_keys: [:app_identifier, :workspace],
+                                         hide_keys: [:app_identifier],
                                              title: "Summary for match nuke #{Fastlane::VERSION}")
 
       prepare_list
@@ -60,18 +85,27 @@ module Match
       end
     end
 
+    # Be smart about optional values here
+    # Depending on the storage mode, different values are required
+    def update_optional_values_depending_on_storage_type(params)
+      if params[:storage_mode] != "git"
+        params.option_for_key(:git_url).optional = true
+      end
+    end
+
     # Collect all the certs/profiles
     def prepare_list
       UI.message("Fetching certificates and profiles...")
       cert_type = Match.cert_type_sym(type)
+      cert_types = [cert_type]
 
       prov_types = []
       prov_types = [:development] if cert_type == :development
-      prov_types = [:appstore, :adhoc] if cert_type == :distribution
+      prov_types = [:appstore, :adhoc, :developer_id] if cert_type == :distribution
       prov_types = [:enterprise] if cert_type == :enterprise
 
       Spaceship.login(params[:username])
-      Spaceship.select_team
+      Spaceship.select_team(team_id: params[:team_id], team_name: params[:team_name])
 
       if Spaceship.client.in_house? && (type == "distribution" || type == "enterprise")
         UI.error("---")
@@ -83,17 +117,39 @@ module Match
         UI.user_error!("Enterprise account nuke cancelled") unless UI.confirm("Do you really want to nuke your Enterprise account?")
       end
 
-      self.certs = certificate_type(cert_type).all
+      # Get all iOS and macOS profile
       self.profiles = []
       prov_types.each do |prov_type|
-        self.profiles += profile_type(prov_type).all
+        self.profiles += profile_type(prov_type).all(mac: false)
+        self.profiles += profile_type(prov_type).all(mac: true)
       end
 
-      certs = Dir[File.join(params[:workspace], "**", cert_type.to_s, "*.cer")]
-      keys = Dir[File.join(params[:workspace], "**", cert_type.to_s, "*.p12")]
+      # Gets the main and additional cert types
+      cert_types += (params[:additional_cert_types] || []).map do |ct|
+        Match.cert_type_sym(ct)
+      end
+
+      # Gets all the certs form the cert types
+      self.certs = []
+      self.certs += cert_types.map do |ct|
+        certificate_type(ct).flat_map do |cert|
+          cert.all(mac: false) + cert.all(mac: true)
+        end
+      end.flatten
+
+      # Finds all the .cer and .p12 files in the file storage
+      certs = []
+      keys = []
+      cert_types.each do |ct|
+        certs += Dir[File.join(self.storage.working_directory, "**", ct.to_s, "*.cer")]
+        keys += Dir[File.join(self.storage.working_directory, "**", ct.to_s, "*.p12")]
+      end
+
+      # Finds all the iOS and macOS profofiles in the file storage
       profiles = []
       prov_types.each do |prov_type|
-        profiles += Dir[File.join(params[:workspace], "**", prov_type.to_s, "*.mobileprovision")]
+        profiles += Dir[File.join(self.storage.working_directory, "**", prov_type.to_s, "*.mobileprovision")]
+        profiles += Dir[File.join(self.storage.working_directory, "**", prov_type.to_s, "*.provisionprofile")]
       end
 
       self.files = certs + keys + profiles
@@ -119,7 +175,9 @@ module Match
         rows = self.profiles.collect do |p|
           status = p.status == 'Active' ? p.status.green : p.status.red
 
-          [p.name, p.id, status, p.type, p.expires.strftime("%Y-%m-%d")]
+          # Expires is sometimes nil
+          expires = p.expires ? p.expires.strftime("%Y-%m-%d") : nil
+          [p.name, p.id, status, p.type, expires]
         end
         puts(Terminal::Table.new({
           title: "Provisioning Profiles that are going to be revoked".green,
@@ -138,8 +196,9 @@ module Match
 
           [file_type, components[2]]
         end
+
         puts(Terminal::Table.new({
-          title: "Files that are going to be deleted".green,
+          title: "Files that are going to be deleted".green + "\n" + self.storage.human_readable_description,
           headings: ["Type", "File Name"],
           rows: rows
         }))
@@ -171,20 +230,24 @@ module Match
       end
 
       if self.files.count > 0
-        delete_files!
+        files_to_delete = delete_files!
       end
+
+      self.encryption.encrypt_files if self.encryption
 
       # Now we need to commit and push all this too
       message = ["[fastlane]", "Nuked", "files", "for", type.to_s].join(" ")
-      GitHelper.commit_changes(params[:workspace], message, self.params[:git_url], params[:git_branch])
+      self.storage.save_changes!(files_to_commit: [],
+                                 files_to_delete: files_to_delete,
+                                 custom_message: message)
     end
 
     private
 
     def delete_files!
-      UI.header("Deleting #{self.files.count} files from the git repo...")
+      UI.header("Deleting #{self.files.count} files from the storage...")
 
-      self.files.each do |file|
+      return self.files.collect do |file|
         UI.message("Deleting file '#{File.basename(file)}'...")
 
         # Check if the profile is installed on the local machine
@@ -197,26 +260,43 @@ module Match
 
         File.delete(file)
         UI.success("Successfully deleted file")
+
+        file
       end
     end
 
     # The kind of certificate we're interested in
     def certificate_type(type)
-      {
-        distribution: Spaceship.certificate.production,
-        development:  Spaceship.certificate.development,
-        enterprise:   Spaceship.certificate.in_house
-      }[type] ||= raise "Unknown type '#{type}'"
+      case type.to_sym
+      when :mac_installer_distribution
+        return [Spaceship.certificate.mac_installer_distribution]
+      when :distribution
+        return [Spaceship.certificate.production, Spaceship.certificate.apple_distribution]
+      when :development
+        return [Spaceship.certificate.development, Spaceship.certificate.apple_development]
+      when :enterprise
+        return [Spaceship.certificate.in_house]
+      else
+        raise "Unknown type '#{type}'"
+      end
     end
 
     # The kind of provisioning profile we're interested in
     def profile_type(prov_type)
-      {
-        appstore:    Spaceship.provisioning_profile.app_store,
-        development: Spaceship.provisioning_profile.development,
-        enterprise:  Spaceship.provisioning_profile.in_house,
-        adhoc:       Spaceship.provisioning_profile.ad_hoc
-      }[prov_type] ||= raise "Unknown provisioning type '#{prov_type}'"
+      case prov_type.to_sym
+      when :appstore
+        return Spaceship.provisioning_profile.app_store
+      when :development
+        return Spaceship.provisioning_profile.development
+      when :enterprise
+        return Spaceship.provisioning_profile.in_house
+      when :adhoc
+        return Spaceship.provisioning_profile.ad_hoc
+      when :developer_id
+        return Spaceship.provisioning_profile.direct
+      else
+        raise "Unknown provisioning type '#{prov_type}'"
+      end
     end
   end
 end

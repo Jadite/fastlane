@@ -1,5 +1,6 @@
 require_relative 'helper'
 require 'xcodeproj'
+require 'fastlane_core/command_executor'
 
 module FastlaneCore
   # Represents an Xcode project
@@ -103,8 +104,8 @@ module FastlaneCore
     # returns the Xcodeproj::Workspace or nil if it is a project
     def workspace
       return nil unless workspace?
+
       @workspace ||= Xcodeproj::Workspace.new_from_xcworkspace(path)
-      @workspace.load_schemes(path)
       @workspace
     end
 
@@ -273,6 +274,10 @@ module FastlaneCore
       (framework? && build_settings(key: "PLATFORM_NAME") == "macosx")
     end
 
+    def supports_mac_catalyst?
+      build_settings(key: "SUPPORTS_MACCATALYST") == "YES"
+    end
+
     def command_line_tool?
       (build_settings(key: "PRODUCT_TYPE") == "com.apple.product-type.tool")
     end
@@ -287,6 +292,10 @@ module FastlaneCore
 
     def ios?
       supported_platforms.include?(:iOS)
+    end
+
+    def watchos?
+      supported_platforms.include?(:watchOS)
     end
 
     def supported_platforms
@@ -313,6 +322,10 @@ module FastlaneCore
       proj << "-configuration #{options[:configuration].shellescape}" if options[:configuration]
       proj << "-xcconfig #{options[:xcconfig].shellescape}" if options[:xcconfig]
 
+      if FastlaneCore::Helper.xcode_at_least?('11.0') && options[:cloned_source_packages_path]
+        proj << "-clonedSourcePackagesDirPath #{options[:cloned_source_packages_path].shellescape}"
+      end
+
       return proj
     end
 
@@ -335,6 +348,12 @@ module FastlaneCore
       command
     end
 
+    def build_xcodebuild_resolvepackagedependencies_command
+      command = "xcodebuild -resolvePackageDependencies #{xcodebuild_parameters.join(' ')}"
+      command += " 2> /dev/null" if xcodebuild_suppress_stderr
+      command
+    end
+
     # Get the build settings for our project
     # e.g. to properly get the DerivedData folder
     # @param [String] The key of which we want the value for (e.g. "PRODUCT_NAME")
@@ -345,6 +364,14 @@ module FastlaneCore
             UI.user_error!("Could not find any schemes for Xcode workspace at path '#{self.path}'. Please make sure that the schemes you want to use are marked as `Shared` from Xcode.")
           end
           options[:scheme] ||= schemes.first
+        end
+
+        # SwiftPM support
+        if FastlaneCore::Helper.xcode_at_least?('11.0')
+          UI.important("Resolving Swift Package Manager dependencies...")
+          FastlaneCore::CommandExecutor.execute(command: build_xcodebuild_resolvepackagedependencies_command,
+                                                print_all: true,
+                                                print_command: !self.xcodebuild_list_silent)
         end
 
         command = build_xcodebuild_showbuildsettings_command
@@ -448,20 +475,18 @@ module FastlaneCore
       if self.workspace?
         # Find the xcodeproj file, as the information isn't included in the workspace file
         # We have a reference to the workspace, let's find the xcodeproj file
-        # For some reason the `plist` gem can't parse the content file
-        # so we'll use a regex to find all group references
+        # Use Xcodeproj gem here to
+        # * parse the contents.xcworkspacedata XML file
+        # * handle different types (group:, container: etc.) of file references and their paths
+        # for details see https://github.com/CocoaPods/Xcodeproj/blob/e0287156d426ba588c9234bb2a4c824149889860/lib/xcodeproj/workspace/file_reference.rb```
 
-        workspace_data_path = File.join(path, "contents.xcworkspacedata")
-        workspace_data = File.read(workspace_data_path)
-        @_project_paths = workspace_data.scan(/\"group:(.*)\"/).collect do |current_match|
-          # It's a relative path from the workspace file
-          File.join(File.expand_path("..", path), current_match.first)
-        end.select do |current_match|
+        workspace_dir_path = File.expand_path("..", self.path)
+        file_references_paths = workspace.file_references.map { |fr| fr.absolute_path(workspace_dir_path) }
+        @_project_paths = file_references_paths.select do |current_match|
           # Xcode workspaces can contain loose files now, so let's filter non-xcodeproj files.
           current_match.end_with?(".xcodeproj")
         end.reject do |current_match|
-          # We're not interested in a `Pods` project, as it doesn't contain any relevant
-          # information about code signing
+          # We're not interested in a `Pods` project, as it doesn't contain any relevant information about code signing
           current_match.end_with?("Pods/Pods.xcodeproj")
         end
 

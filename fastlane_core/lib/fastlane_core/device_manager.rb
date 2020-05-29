@@ -45,11 +45,12 @@ module FastlaneCore
           if line =~ /^-- /
             (os_type, os_version) = line.gsub(/-- (.*) --/, '\1').split
           else
+            next if os_type =~ /^Unavailable/
 
             # "    iPad (5th generation) (852A5796-63C3-4641-9825-65EBDC5C4259) (Shutdown)"
             # This line will turn the above string into
-            # ["iPad", "(5th generation)", "(852A5796-63C3-4641-9825-65EBDC5C4259)", "(Shutdown)"]
-            matches = line.strip.scan(/(.*?) (\(.*?\))/).flatten.reject(&:empty?)
+            # ["iPad (5th generation)", "(852A5796-63C3-4641-9825-65EBDC5C4259)", "(Shutdown)"]
+            matches = line.strip.scan(/^(.*?) (\([^)]*?\)) (\([^)]*?\))$/).flatten.reject(&:empty?)
             state = matches.pop.to_s.delete('(').delete(')')
             udid = matches.pop.to_s.delete('(').delete(')')
             name = matches.join(' ')
@@ -98,8 +99,8 @@ module FastlaneCore
 
           instruments_devices_output.split(/\n/).each do |instruments_device|
             device_uuids.each do |device_uuid|
-              match = instruments_device.match(/(.+) \(([0-9.]+)\) \[([0-9a-f]+)\]?/)
-              if match && match[3] == device_uuid
+              match = instruments_device.match(/(.+) \(([0-9.]+)\) \[(\h{40}|\h{8}-\h{16})\]?/)
+              if match && match[3].delete("-") == device_uuid
                 devices << Device.new(name: match[1], udid: match[3], os_type: requested_os_type, os_version: match[2], state: "Booted", is_simulator: false)
                 UI.verbose("USB Device Found - \"" + match[1] + "\" (" + match[2] + ") UUID:" + match[3])
               end
@@ -118,10 +119,11 @@ module FastlaneCore
         end
 
         is_supported_device = device_types.any? { |device_type| usb_item['_name'] == device_type }
-        has_serial_number = (usb_item['serial_num'] || '').length == 40
+        serial_num = usb_item['serial_num'] || ''
+        has_serial_number = serial_num.length == 40 || serial_num.length == 24
 
         if is_supported_device && has_serial_number
-          discovered_device_udids << usb_item['serial_num']
+          discovered_device_udids << serial_num
         end
       end
 
@@ -210,6 +212,19 @@ module FastlaneCore
         `xcrun simctl delete #{self.udid}`
         return
       end
+
+      def disable_slide_to_type
+        return unless is_simulator
+        return unless os_type == "iOS"
+        return unless Gem::Version.new(os_version) >= Gem::Version.new('13.0')
+        UI.message("Disabling 'Slide to Type' #{self}")
+
+        plist_buddy = '/usr/libexec/PlistBuddy'
+        plist_buddy_cmd = "-c \"Add :KeyboardContinuousPathEnabled bool false\""
+        plist_path = File.expand_path("~/Library/Developer/CoreSimulator/Devices/#{self.udid}/data/Library/Preferences/com.apple.keyboard.ContinuousPath.plist")
+
+        Helper.backticks("#{plist_buddy} #{plist_buddy_cmd} #{plist_path} >/dev/null 2>&1")
+      end
     end
   end
 
@@ -246,6 +261,13 @@ module FastlaneCore
         all.select { |device| device.os_version == os_version }.each(&:delete)
       end
 
+      # Disable 'Slide to Type' by UDID or name and OS version
+      # Latter is useful when combined with -destination option of xcodebuild
+      def disable_slide_to_type(udid: nil, name: nil, os_version: nil)
+        match = all.detect { |device| device.udid == udid || device.name == name && device.os_version == os_version }
+        match.disable_slide_to_type if match
+      end
+
       def clear_cache
         @devices = nil
       end
@@ -275,6 +297,16 @@ module FastlaneCore
         end
       end
 
+      def uninstall_app(app_identifier, device_type, device_udid)
+        UI.verbose("Uninstalling app '#{app_identifier}' from #{device_type}...")
+
+        UI.message("Launch Simulator #{device_type}")
+        Helper.backticks("xcrun instruments -w #{device_udid} &> /dev/null")
+
+        UI.message("Uninstall application #{app_identifier}")
+        Helper.backticks("xcrun simctl uninstall #{device_udid} #{app_identifier} &> /dev/null")
+      end
+
       private
 
       def copy_logfile(device, log_identity, logs_destination_dir)
@@ -292,10 +324,10 @@ module FastlaneCore
       def copy_logarchive(device, log_identity, logs_destination_dir)
         require 'shellwords'
 
-        logarchive_dst = Shellwords.escape(File.join(logs_destination_dir, "system_logs-#{log_identity}.logarchive"))
+        logarchive_dst = File.join(logs_destination_dir, "system_logs-#{log_identity}.logarchive").shellescape
         FileUtils.rm_rf(logarchive_dst)
         FileUtils.mkdir_p(File.expand_path("..", logarchive_dst))
-        command = "xcrun simctl spawn #{device.udid} log collect --output #{logarchive_dst} 2>/dev/null"
+        command = "xcrun simctl spawn --standalone #{device.udid} log collect --output #{logarchive_dst} 2>/dev/null"
         FastlaneCore::CommandExecutor.execute(command: command, print_all: false, print_command: true)
       end
     end

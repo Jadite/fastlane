@@ -70,7 +70,7 @@ module Fastlane
     end
 
     def run(action_named: nil, action_class_ref: nil, parameter_map: nil)
-      action_return = runner.execute_action(action_named, action_class_ref, [parameter_map], custom_dir: '.', configuration_language: "swift")
+      action_return = runner.execute_action(action_named, action_class_ref, [parameter_map], custom_dir: '.')
       return action_return
     end
 
@@ -83,7 +83,7 @@ module Fastlane
 
       case command.method_name
       when "sh"
-        error_callback = proc { |string_value| closure_argument_value = string_value }
+        error_callback = proc { |string_value| closure_argument_value = string_value } if parameter_map[:error_callback]
         command_param = parameter_map[:command]
         log_param = parameter_map[:log]
         action_return = Fastlane::FastFile.sh(command_param, log: log_param, error_callback: error_callback)

@@ -100,6 +100,19 @@ module Spaceship
     end
     private :platform_slug
 
+    def list_pending_agreements(language: "en")
+      r = request(:post) do |req|
+        req.url("account/listPendingAgreements")
+        req.body = {
+          teamId: team_id,
+          languageIsoCode: language
+        }.to_json
+        req.headers['Content-Type'] = 'application/json'
+      end
+
+      return parse_response(r)
+    end
+
     #####################################################
     # @!group Apps
     #####################################################
@@ -532,7 +545,13 @@ module Spaceship
         register: 'single'
       })
 
-      parse_response(req, 'devices').first
+      devices = parse_response(req, 'devices')
+      return devices.first unless devices.empty?
+
+      validation_messages = parse_response(req, 'validationMessages').map { |message| message["validationUserMessage"] }.compact.uniq
+
+      raise UnexpectedResponse.new, validation_messages.join('\n') unless validation_messages.empty?
+      raise UnexpectedResponse.new, "Couldn't register new device, got this: #{parse_response(req)}"
     end
 
     def disable_device!(device_id, device_udid, mac: false)
@@ -575,7 +594,8 @@ module Spaceship
         teamId: team_id,
         type: type,
         csrContent: csr,
-        appIdId: app_id # optional
+        appIdId: app_id, # optional
+        specialIdentifierDisplayId: app_id, # For requesting Web Push certificates
       })
       parse_response(r, 'certRequest')
     end
@@ -641,6 +661,7 @@ module Spaceship
         r.params = {
           teamId: team_id,
           includeInactiveProfiles: true,
+          includeExpiredProfiles: true,
           onlyCountLists: true
         }
       end
@@ -700,10 +721,7 @@ module Spaceship
     end
 
     def delete_provisioning_profile!(profile_id, mac: false)
-      ensure_csrf(Spaceship::Portal::ProvisioningProfile) do
-        fetch_csrf_token_for_provisioning
-      end
-
+      fetch_csrf_token_for_provisioning
       r = request(:post, "account/#{platform_slug(mac)}/profile/deleteProvisioningProfile.action", {
         teamId: team_id,
         provisioningProfileId: profile_id
@@ -760,6 +778,8 @@ module Spaceship
     end
 
     def create_key!(name: nil, service_configs: nil)
+      fetch_csrf_token_for_keys
+
       params = {
         name: name,
         serviceConfigurations: service_configs,
@@ -776,6 +796,7 @@ module Spaceship
     end
 
     def revoke_key!(id: nil)
+      fetch_csrf_token_for_keys
       response = request(:post, 'account/auth/key/revoke', { teamId: team_id, keyId: id })
       parse_response(response)
     end
@@ -814,14 +835,26 @@ module Spaceship
     # profiles.
     # Source https://github.com/fastlane/fastlane/issues/5903
     def fetch_csrf_token_for_provisioning(mac: false)
-      req = request(:post, "account/#{platform_slug(mac)}/profile/listProvisioningProfiles.action", {
+      response = request(:post, "account/#{platform_slug(mac)}/profile/listProvisioningProfiles.action", {
          teamId: team_id,
          pageNumber: 1,
          pageSize: 1,
          sort: 'name=asc'
        })
 
-      parse_response(req, 'provisioningProfiles')
+      parse_response(response, 'provisioningProfiles')
+      return nil
+    end
+
+    def fetch_csrf_token_for_keys
+      response = request(:post, 'account/auth/key/list', {
+         teamId: team_id,
+         pageNumber: 1,
+         pageSize: 1,
+         sort: 'name=asc'
+       })
+
+      parse_response(response, 'keys')
       return nil
     end
   end

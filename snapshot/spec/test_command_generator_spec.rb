@@ -105,11 +105,11 @@ describe Snapshot do
 
         expect(FastlaneCore::CommandExecutor).
           to receive(:execute).
-          with(command: "xcrun simctl spawn 33333 log collect --output /tmp/scan_results/de-DE/system_logs-cfcd208495d565ef66e7dff9f98764da.logarchive 2>/dev/null", print_all: false, print_command: true)
+          with(command: "xcrun simctl spawn --standalone 33333 log collect --output /tmp/scan_results/de-DE/system_logs-cfcd208495d565ef66e7dff9f98764da.logarchive 2>/dev/null", print_all: false, print_command: true)
 
         expect(FastlaneCore::CommandExecutor).
           to receive(:execute).
-          with(command: "xcrun simctl spawn 98765 log collect --output /tmp/scan_results/en-US/system_logs-cfcd208495d565ef66e7dff9f98764da.logarchive 2>/dev/null", print_all: false, print_command: true)
+          with(command: "xcrun simctl spawn --standalone 98765 log collect --output /tmp/scan_results/en-US/system_logs-cfcd208495d565ef66e7dff9f98764da.logarchive 2>/dev/null", print_all: false, print_command: true)
 
         Snapshot::SimulatorLauncher.new(launcher_configuration: launcher_config).copy_simulator_logs(["iPhone 6 (10.1)"], "de-DE", nil, 0)
         Snapshot::SimulatorLauncher.new(launcher_configuration: launcher_config).copy_simulator_logs(["iPhone 6s (10.1)"], "en-US", nil, 0)
@@ -180,7 +180,8 @@ describe Snapshot do
               "FASTLANE_SNAPSHOT=YES",
               :build,
               :test,
-              "| tee /path/to/logs | xcpretty "
+              "| tee /path/to/logs",
+              "| xcpretty "
             ]
           )
         end
@@ -208,7 +209,8 @@ describe Snapshot do
               "FASTLANE_SNAPSHOT=YES",
               :build,
               :test,
-              "| tee /path/to/logs | xcpretty "
+              "| tee /path/to/logs",
+              "| xcpretty "
             ]
           )
         end
@@ -235,7 +237,8 @@ describe Snapshot do
               "FASTLANE_SNAPSHOT=YES",
               :build,
               :test,
-              "| tee /path/to/logs | xcpretty "
+              "| tee /path/to/logs",
+              "| xcpretty "
             ]
           )
         end
@@ -264,6 +267,67 @@ describe Snapshot do
           expect(command.join('')).not_to(include("build test"))
         end
       end
+
+      context 'test-plan' do
+        it 'adds the testplan to the xcodebuild command', requires_xcode: true do
+          configure(options.merge(testplan: 'simple'))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("-testPlan 'simple'") if FastlaneCore::Helper.xcode_at_least?(11)
+        end
+      end
+
+      context "only-testing" do
+        it "only tests the test bundle/suite/cases specified in only_testing when the input is an array", requires_xcode: true do
+          configure(options.merge(only_testing: %w(TestBundleA/TestSuiteB TestBundleC)))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("-only-testing:TestBundleA/TestSuiteB")
+          expect(command.join('')).to include("-only-testing:TestBundleC")
+        end
+
+        it "only tests the test bundle/suite/cases specified in only_testing when the input is a string", requires_xcode: true do
+          configure(options.merge(only_testing: 'TestBundleA/TestSuiteB'))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("-only-testing:TestBundleA/TestSuiteB")
+          expect(command.join('')).not_to(include("-only-testing:TestBundleC"))
+        end
+      end
+
+      context "skip-testing" do
+        it "does not test the test bundle/suite/cases specified in skip_testing when the input is an array", requires_xcode: true do
+          configure(options.merge(skip_testing: %w(TestBundleA/TestSuiteB TestBundleC)))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("-skip-testing:TestBundleA/TestSuiteB")
+          expect(command.join('')).to include("-skip-testing:TestBundleC")
+        end
+
+        it "does not test the test bundle/suite/cases specified in skip_testing when the input is a string", requires_xcode: true do
+          configure(options.merge(skip_testing: 'TestBundleA/TestSuiteB'))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("-skip-testing:TestBundleA/TestSuiteB")
+          expect(command.join('')).not_to(include("-skip-testing:TestBundleC"))
+        end
+      end
+
+      context "disable_xcpretty" do
+        it "does not include xcpretty in the pipe command when true", requires_xcode: true do
+          configure(options.merge(disable_xcpretty: true))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to_not(include("| xcpretty "))
+        end
+
+        it "includes xcpretty in the pipe command when false", requires_xcode: true do
+          configure(options.merge(disable_xcpretty: false))
+
+          command = Snapshot::TestCommandGenerator.generate(devices: ["iPhone 6"], language: "en", locale: nil)
+          expect(command.join('')).to include("| xcpretty ")
+        end
+      end
     end
 
     describe "Valid macOS Configuration" do
@@ -289,7 +353,8 @@ describe Snapshot do
             "FASTLANE_SNAPSHOT=YES",
             :build,
             :test,
-            "| tee /path/to/logs | xcpretty "
+            "| tee /path/to/logs",
+            "| xcpretty "
           ]
         )
       end

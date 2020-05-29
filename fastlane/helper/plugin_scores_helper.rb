@@ -2,6 +2,7 @@ module Fastlane
   module Helper
     module PluginScoresHelper
       require 'faraday'
+      require 'faraday_middleware'
       require 'yaml'
 
       class FastlanePluginRating
@@ -189,7 +190,7 @@ module Fastlane
         def append_git_data
           Dir.mktmpdir("fastlane-plugin") do |tmp|
             clone_folder = File.join(tmp, self.name)
-            `GIT_TERMINAL_PROMPT=0 git clone '#{self.homepage}' '#{clone_folder}'`
+            `GIT_TERMINAL_PROMPT=0 git clone #{self.homepage.shellescape} #{clone_folder.shellescape}`
 
             break unless File.directory?(clone_folder)
 
@@ -294,6 +295,7 @@ module Fastlane
         end
 
         # Parses the file to find all included actions
+        # rubocop:disable PerceivedComplexity
         def parse_file(file, debug_state: false)
           lines = File.read(file).lines
           actions = []
@@ -325,7 +327,12 @@ module Fastlane
               end
             when :in_method
               if (string_statement = string_statement_from_line(line))
-                last_string_statement = string_statement
+                # Multiline support for `description` method
+                if last_method_name == 'description' && !last_string_statement.nil?
+                  last_string_statement.concat(string_statement)
+                else
+                  last_string_statement = string_statement
+                end
               end
               if is_block?(line)
                 self.state << :in_block

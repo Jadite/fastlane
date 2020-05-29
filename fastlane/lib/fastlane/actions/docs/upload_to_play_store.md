@@ -33,20 +33,7 @@ _supply_ uploads app metadata, screenshots, binaries, and app bundles to Google 
 
 Setup consists of setting up your Google Developers Service Account
 
-1. Open the [Google Play Console](https://play.google.com/apps/publish/)
-1. Select **Settings** tab, followed by the **API access** tab
-1. Click the **Create Service Account** button and follow the **Google API Console** link in the dialog
-1. Click the **Create Service account** button at the top of the developers console screen
-1. Provide a name for the service account
-1. Click **Select a role** and choose **Service Accounts > Service Account User**
-1. Check the **Furnish a new private key** checkbox
-1. Select **JSON** as the Key type
-1. Click **Create** to close the dialog
-1. Make a note of the file name of the JSON file downloaded to your computer
-1. Back on the Google Play developer console, click **Done** to close the dialog
-1. Click on **Grant Access** for the newly added service account
-1. Choose **Release Manager** from the **Role** dropdown
-1. Click **Add user** to close the dialog
+{!docs/includes/google-credentials.md!}
 
 ### Migrating Google credential format (from .p12 key file to .json)
 
@@ -88,13 +75,33 @@ This will also upload app metadata if you previously ran `fastlane supply init`.
 To gradually roll out a new build use
 
 ```no-highlight
-fastlane supply --apk path/app.apk --track rollout --rollout 0.5
+fastlane supply --apk path/app.apk --track beta --rollout 0.5
 ```
+
+To set the in-app update priority level for a release, set a valid update priority (an integer value from 0 to 5) using option `in_app_update_priority`
+
+```no-highlight
+fastlane supply --apk path/app.apk --track beta --in_app_update_priority 3
+```
+
+### Expansion files (`.obb`)
 
 Expansion files (obbs) found under the same directory as your APK will also be uploaded together with your APK as long as:
 
 - they are identified as type 'main' or 'patch' (by containing 'main' or 'patch' in their file name)
 - you have at most one of each type
+
+If you only want to update the APK, but keep the expansion files from the previous version on Google Play use
+
+```no-highlight
+fastlane supply --apk path/app.apk --obb_main_references_version 21 --obb_main_file_size 666154207
+```
+
+or
+
+```no-highlight
+fastlane supply --apk path/app.apk --obb_patch_references_version 21 --obb_patch_file_size 666154207
+```
 
 ## Uploading an AAB
 
@@ -109,7 +116,13 @@ This will also upload app metadata if you previously ran `fastlane supply init`.
 To gradually roll out a new build use
 
 ```no-highlight
-fastlane supply --aab path/app.aab --track rollout --rollout 0.5
+fastlane supply --aab path/app.aab --track beta --rollout 0.5
+```
+
+To set the in-app update priority level for a release, set a valid update priority (an integer value from 0 to 5) using option `in_app_update_priority`
+
+```no-highlight
+fastlane supply --aab path/app.aab --track beta --in_app_update_priority 3
 ```
 
 ## Images and Screenshots
@@ -135,7 +148,7 @@ Note that these will replace the current images and screenshots on the play stor
 
 ## Changelogs (What's new)
 
-You can add changelog files under the `changelogs/` directory for each locale. The filename should exactly match the version code of the APK that it represents. `fastlane supply init` will populate changelog files from existing data on Google Play if no `metadata/` directory exists when it is run.
+You can add changelog files under the `changelogs/` directory for each locale. The filename should exactly match the [version code](https://developer.android.com/studio/publish/versioning#appversioning) of the APK that it represents. You can also provide default notes that will be used if no files match the version code by adding a `default.txt` file. `fastlane supply init` will populate changelog files from existing data on Google Play if no `metadata/` directory exists when it is run.
 
 ```no-highlight
 └── fastlane
@@ -143,10 +156,12 @@ You can add changelog files under the `changelogs/` directory for each locale. T
         └── android
             ├── en-US
             │   └── changelogs
+            │       ├── default.txt
             │       ├── 100000.txt
             │       └── 100100.txt
             └── fr-FR
                 └── changelogs
+                    ├── default.txt
                     └── 100100.txt
 ```
 
@@ -159,3 +174,27 @@ This can be done using the `--track_promote_to` parameter. The `--track_promote_
 ## Retrieve Track Version Codes
 
 Before performing a new APK upload you may want to check existing track version codes, or you may simply want to provide an informational lane that displays the currently promoted version codes for the production track. You can use the `google_play_track_version_codes` action to retrieve existing version codes for a package and track. For more information, see `fastlane action google_play_track_version_codes` help output.
+
+## Migration from AndroidPublisherV2 to AndroidPublisherV3 in _fastlane_ 2.135.0
+
+### New Options
+- `:version_name`
+  - Used when uploading with `:apk_path`, `:apk_paths`, `:aab_path`, and `:aab_paths`
+  - Can be any string such (example: "October Release" or "Awesome New Feature")
+  - Defaults to the version name in app/build.gradle or AndroidManifest.xml
+- `:release_status`
+  - Used when uploading with `:apk_path`, `:apk_paths`, `:aab_path`, and `:aab_paths`
+  - Can set as  "draft" to complete the release at some other time
+  - Defaults to "completed"
+- `:version_code`
+  - Used for `:update_rollout`, `:track_promote_to`, and uploading of meta data and screenshots
+- `:skip_upload_changelogs`
+  - Changelogs were previously included with the `:skip_upload_metadata` but is now its own option
+
+### Deprecated Options
+- `:check_superseded_tracks`
+  - Google Play will automatically remove releases that are superseded now
+- `:deactivate_on_promote`
+  - Google Play will automatically deactive a release from its previous track on promote
+
+:

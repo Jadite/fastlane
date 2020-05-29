@@ -1,7 +1,7 @@
 module Fastlane
   module Actions
     module SharedValues
-      FL_CHANGELOG = :FL_CHANGELOG
+      FL_CHANGELOG ||= :FL_CHANGELOG
     end
 
     class ChangelogFromGitCommitsAction < Action
@@ -68,7 +68,9 @@ module Fastlane
       end
 
       def self.output
-        ['FL_CHANGELOG', 'The changelog String generated from the collected Git commit messages']
+        [
+          ['FL_CHANGELOG', 'The changelog string generated from the collected git commit messages']
+        ]
       end
 
       def self.available_options
@@ -132,7 +134,7 @@ module Fastlane
                                        is_string: false),
           FastlaneCore::ConfigItem.new(key: :quiet,
                                        env_name: 'FL_CHANGELOG_FROM_GIT_COMMITS_TAG_QUIET',
-                                       description: 'Whether or not to disbale changelog output',
+                                       description: 'Whether or not to disable changelog output',
                                        optional: true,
                                        default_value: false,
                                        is_string: false),
